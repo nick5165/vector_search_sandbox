@@ -1,6 +1,6 @@
 import pandas as pd
 
-class XLXSDataset:
+class XLSXDataset:
     """
     Датасет для чтения Excel-файлов, возвращающий данные с названиями колонок.
     """

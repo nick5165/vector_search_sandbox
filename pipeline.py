@@ -1,5 +1,5 @@
 import random
-from database import XLXSDataset 
+from database import XLSXDataset
 from retrieve import Retriever
 from embedders import BGEHyibridEmbedder
 
@@ -18,7 +18,7 @@ files_map = {
 engine.index_datasets(files_map)
 
 questions_path = PATH_TO_QUERIES
-questions_dataset = XLXSDataset(questions_path)
+questions_dataset = XLSXDataset(questions_path)
 
 random_idx = random.randint(0, len(questions_dataset) - 1)
 item = questions_dataset[random_idx]
