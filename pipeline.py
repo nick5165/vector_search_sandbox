@@ -8,16 +8,16 @@ PATH_TO_DOCS = ""
 PATH_TO_FAQ = ""
 PATH_TO_QUERIES = ""
 
-embedder = BGEHyibridEmbedder() 
+embedder = BGEHyibridEmbedder(PATH_TO_MODEL) 
 engine = Retriever(embedder)
 
 files_map = {
-    "documentation": "docs_dump.jsonl",
-    "faq": "faq_dump.jsonl"
+    "documentation": PATH_TO_DOCS,
+    "faq": PATH_TO_FAQ
 }
 engine.index_datasets(files_map)
 
-questions_path = "questions.xlsx"
+questions_path = PATH_TO_QUERIES
 questions_dataset = XLXSDataset(questions_path)
 
 random_idx = random.randint(0, len(questions_dataset) - 1)
