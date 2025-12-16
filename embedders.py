@@ -1,7 +1,9 @@
 import torch
+import fasttext
+import numpy as np
 from FlagEmbedding import BGEM3FlagModel
 
-class BGEHyibridEmbedder:
+class BGEHybridEmbedder:
     def __init__(self, model_path: str, device:str = None):
         """
         Инициализация модели.
@@ -16,7 +18,7 @@ class BGEHyibridEmbedder:
                 
         print(f"BGE-M3 Loading on {device}")
         self.model = BGEM3FlagModel(
-            model_path = model_path,
+            model_name_or_path = model_path,
             use_fp16 = (device == "cuda"),
             device = device
         )
@@ -42,3 +44,21 @@ class BGEHyibridEmbedder:
             sparse_vec[token_id] = weight
             
         return dense_vec, sparse_vec
+    
+class FastTextEmbedder:
+    def __init__(self, model_path: str):
+        """
+        model_path: путь к файлу .bin 
+        """
+        print(f"Loading FastText model from {model_path}...")
+        self.model = fasttext.load_model(model_path)
+        print("FastText loaded.")
+        
+    def embed(self, text: str):
+        """
+        Возвращает Dense вектор от FastText.
+        Sparse возвращает пустым, так как он будет вычисляться через BM25 в Retriever.
+        """
+        text = text.replace("\n", " ")
+        dense_vec = self.model.get_sentence_vector(text).tolist()
+        return dense_vec, {}
