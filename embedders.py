@@ -2,8 +2,23 @@ import torch
 import fasttext
 import numpy as np
 from FlagEmbedding import BGEM3FlagModel
+from abc import ABC, abstractmethod
+from typing import Any, Tuple, List, Dict
 
-class BGEHybridEmbedder:
+class BaseEmbedder(ABC):
+    """
+    Абстрактный интерфейс сервисов генерации эмбеддингов.
+    """
+    
+    @abstractmethod
+    def embed_dense(self, text: str) -> np.ndarray:
+        pass
+    
+    @abstractmethod
+    def embed_sparse(self, text: str) -> Dict[int, float]:
+        pass
+
+class BGEHybridEmbedder(BaseEmbedder):
     def __init__(self, model_path: str, device:str = None):
         """
         Инициализация модели.
@@ -24,41 +39,32 @@ class BGEHybridEmbedder:
         )
         self.tokenizer = self.model.tokenizer
         
-    def embed(self, text: str):
-        """
-        Возвращает Dense и Sparse эмбеддинги для одного текста.
-        """
-        output = self.model.encode(
-            text,
-            return_dense=True,
-            return_sparse=True,
-            return_colbert_vecs=False
-        )
-        dense_vec = output["dense_vecs"].tolist()
+    def embed_dense(self, text) -> np.ndarray:
+        output = self.model.encode(text, return_dense=True, return_sparse=False)
+        return output['dense_vecs'].tolist()
+    
+    def embed_sparse(self, text):
+        output = self.model.encode(text, return_dense=False, return_sparse=True)
+        raw_weights = output["lexical_weights"]
         
-        raw_sparse = output["lexical_weights"]
         sparse_vec = {}
         
-        for token_str, weight in raw_sparse.items():
-            token_id = self.tokenizer.convert_tokens_to_ids(token_str)
-            sparse_vec[token_id] = weight
-            
-        return dense_vec, sparse_vec
+        for token, weight in raw_weights.items():
+            tid = self.tokenizer.convert_tokens_to_ids(token)
+            sparse_vec[tid] = float(weight)
+        return sparse_vec
     
-class FastTextEmbedder:
+class FastTextEmbedder(BaseEmbedder):
     def __init__(self, model_path: str):
         """
         model_path: путь к файлу .bin 
         """
         print(f"Loading FastText model from {model_path}...")
         self.model = fasttext.load_model(model_path)
-        print("FastText loaded.")
         
-    def embed(self, text: str):
-        """
-        Возвращает Dense вектор от FastText.
-        Sparse возвращает пустым, так как он будет вычисляться через BM25 в Retriever.
-        """
+    def embed_dense(self, text) -> np.ndarray:
         text = text.replace("\n", " ")
-        dense_vec = self.model.get_sentence_vector(text).tolist()
-        return dense_vec, {}
+        return np.array(self.model.get_sentence_vector(text))
+    
+    def embed_sparse(self, text) -> Dict[int, float]:
+        return {}

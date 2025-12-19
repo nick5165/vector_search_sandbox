@@ -6,11 +6,11 @@ class XLSXDataset:
     """
     def __init__(self, path: str):
         self.path = path
-        df = pd.read_excel(self.path)
+        self.df = pd.read_excel(self.path)
         
-        self.columns = df.columns.tolist()
+        self.columns = self.df.columns.tolist()
         
-        self.data = df.values.tolist()
+        self.data = self.df.values.tolist()
         
     def __len__(self):
         return len(self.data)
@@ -24,8 +24,8 @@ class JSONLDataset:
     Датасет для формата JSON Lines (.jsonl).
     """
     def __init__(self, path):
-        df = pd.read_json(path, lines=True)
-        self.data = df.to_dict(orient='records')
+        self.df = pd.read_json(path, lines=True)
+        self.data = self.df.to_dict(orient='records')
 
     def __len__(self):
         return len(self.data)
