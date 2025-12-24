@@ -1,8 +1,8 @@
 import torch
 import fasttext
 import numpy as np
-from FlagEmbedding import BGEM3FlagModel
 from abc import ABC, abstractmethod
+from FlagEmbedding import BGEM3FlagModel
 from typing import Any, Tuple, List, Dict
 
 class BaseEmbedder(ABC):

@@ -1,34 +1,37 @@
 import pandas as pd
 
-class XLSXDataset:
+class BasePandasDataset:
     """
-    Датасет для чтения Excel-файлов, возвращающий данные с названиями колонок.
+    Базовый класс для датасетов на основе Pandas
     """
-    def __init__(self, path: str):
-        self.path = path
-        self.df = pd.read_excel(self.path)
-        
-        self.columns = self.df.columns.tolist()
-        
-        self.data = self.df.values.tolist()
+    def __init__(self, df: pd.DataFrame):
+        self.df = df
+        self.data = df.to_dict(orient='records')
+        self.columns = df.columns.to_list()
         
     def __len__(self):
         return len(self.data)
+    
+    def __getitem__(self, idx):
+        if isinstance(idx, str):
+            if idx in self.df.columns:
+                return self.df[idx].to_list()
+            else:
+                raise KeyError(f"Column {idx} not found in dataset")
+            
+        elif isinstance(idx, slice):
+            return self.data[idx]
         
-    def __getitem__(self, idx):
-        return dict(zip(self.columns, self.data[idx]))
-
-
-class JSONLDataset:
-    """
-    Датасет для формата JSON Lines (.jsonl).
-    """
-    def __init__(self, path):
-        self.df = pd.read_json(path, lines=True)
-        self.data = self.df.to_dict(orient='records')
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
         return self.data[idx]
+    
+class XLSXDataset(BasePandasDataset):
+    def __init__(self, path: str):
+        print(f"Loading XLSX from {path}...")
+        df = pd.read_excel(path)
+        super().__init__(df)
+        
+class JSONLDataset(BasePandasDataset):
+    def __init__(self, path: str):
+        print(f"Loading JSONL from {path}...")
+        df = pd.read_json(path, lines=True)
+        super().__init__(df)

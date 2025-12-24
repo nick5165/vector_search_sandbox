@@ -98,8 +98,11 @@ class DenseRetriever(BaseRetriever):
                 vec = self.embedder.embed_dense(t)
                 self.vectors.append(self._normalize(vec))
                 self.index_to_doc_id.append(doc_idx)
-                
+            
+        if self.vectors:    
             self.matrix = np.vstack(self.vectors)
+        else:
+            self.matrix = np.array([])
             
     def search(self, query: str, top_k: int) -> List[Tuple[int, float]]:
         """

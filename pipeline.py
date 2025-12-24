@@ -1,195 +1,147 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
-import pandas as pd
 import sys
+import pandas as pd
 from tqdm import tqdm
-
-from database import JSONLDataset, XLSXDataset 
+from typing import List, Dict
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+from database import JSONLDataset, XLSXDataset
 from embedders import BGEHybridEmbedder, FastTextEmbedder
 from retrieval import DenseRetriever, BM25Retriever, EnsembleRetriever
 
-PATH_FASTTEXT = "/home/mikhailovnk/run_git/vector_search_sandbox/cc.ru.300.bin"
-PATH_BGE = "/home/mikhailovnk/00_Models/Embedders/BGE-M3"
-PATH_DOCS = "/home/mikhailovnk/run_git/vector_search_sandbox/indorcad.jsonl"
-PATH_FAQ = "/home/mikhailovnk/run_git/vector_search_sandbox/faq.jsonl"
-PATH_QUERIES = "/home/mikhailovnk/run_git/vector_search_sandbox/Ответы_IndorAssistant_v2.xlsx"
-OUTPUT_DIR = "./comparison_results"
+PATHS = {
+    "fasttext": "/home/mikhailovnk/run_git/vector_search_sandbox/cc.ru.300.bin",
+    "bge": "/home/mikhailovnk/00_Models/Embedders/BGE-M3",
+    "docs": [
+        "/home/mikhailovnk/run_git/vector_search_sandbox/indorcad.jsonl",
+        "/home/mikhailovnk/run_git/vector_search_sandbox/faq.jsonl"
+    ],
+    "queries": "/home/mikhailovnk/run_git/vector_search_sandbox/Ответы_IndorAssistant_v2.xlsx",
+    "output_dir": "./comparison_results"
+}
+REPORT_FILENAME = "comparison_matrix.xlsx"
+TOP_K_RESULTS = 5
+QUERIES_LIMIT = 20  
 
-def load_data():
-    """
-    Загружает документы. Если документов нет — возвращает пустой список.
-    """
+def load_documents(file_paths: List[str]) -> List[Dict]:
     docs = []
-    sources = [PATH_DOCS, PATH_FAQ]
-    
-    for path in sources:
-        if os.path.exists(path):
-            print(f"Loading from {path}...")
-            ds = JSONLDataset(path) 
-            
-            for i in tqdm(range(len(ds)), desc=f"Reading {os.path.basename(path)}"):
-                rec = ds[i]
-                rec['source_file'] = os.path.basename(path)
-                docs.append(rec)
-        else:
+    for path in file_paths:
+        if not os.path.exists(path):
             print(f"Warning: Path not found {path}")
+            continue
             
+        print(f"Loading from {os.path.basename(path)}...")
+        ds = JSONLDataset(path)
+        for i in tqdm(range(len(ds)), desc="Reading records"):
+            rec = ds[i]
+            rec['source_file'] = os.path.basename(path)
+            docs.append(rec)
     return docs
 
-def load_queries():
-    """
-    Загружает вопросы из Excel.
-    Если файла нет или колонка не найдена — вызывает ошибку (никаких заглушек).
-    """
-    if not os.path.exists(PATH_QUERIES):
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: Файл с вопросами не найден: {PATH_QUERIES}")
+def load_queries(path: str) -> List[str]:
+    if not os.path.exists(path):
+        print(f"CRITICAL: Queries file not found: {path}")
         sys.exit(1)
 
-    print(f"Loading queries from {PATH_QUERIES}...")
-    ds = XLSXDataset(PATH_QUERIES)
+    print(f"Loading queries from {path}...")
+    ds = XLSXDataset(path)
     
-    target_col = None
-    for col in ds.columns:
-        if 'Вопрос' in str(col):
-            target_col = col
-            break
+    target_col = next((col for col in ds.columns if 'Вопрос' in str(col)), None)
     
-    if target_col:
-        print(f"Found query column: '{target_col}'")
-        return ds.df[target_col].dropna().astype(str).tolist()
-    else:
-        print("КРИТИЧЕСКАЯ ОШИБКА: В Excel файле не найдена колонка 'Вопрос' или 'Query'.")
+    if not target_col:
+        print("CRITICAL: Column 'Вопрос' not found in Excel.")
         sys.exit(1)
+        
+    return [str(q).strip() for q in ds[target_col] if str(q).strip()]
 
-def save_report_xlsx(results_map, filename="report.xlsx"):
-    rows = []
+def save_report(results_map: Dict, output_path: str):
     if not results_map:
         print("No results to save.")
         return
 
+    rows = []
     first_q = next(iter(results_map))
     methods = list(results_map[first_q].keys())
-    
+
     for query, methods_data in tqdm(results_map.items(), desc="Generating Report"):
-        max_hits = max(len(hits) for hits in methods_data.values())
+        max_hits = max((len(hits) for hits in methods_data.values()), default=0)
         
         for rank in range(max_hits):
-            row = {
-                "Query": query,
-                "Rank": rank + 1
-            }
+            row = {"Query": query, "Rank": rank + 1}
             
-            for method_name in methods:
-                hits = methods_data.get(method_name, [])
-                
+            for method in methods:
+                hits = methods_data.get(method, [])
                 if rank < len(hits):
                     hit = hits[rank]
                     content = hit['content']
-
+                    
                     text = content.get("chunk_text") or content.get("answer") or content.get("question") or ""
                     source = content.get("source_file", "")
-
                     score = hit.get('rrf_score', 0)
 
-                    row[f"{method_name} Score"] = round(score, 4)
-                    row[f"{method_name} Text"] = text[:32000]
-                    row[f"{method_name} Source"] = source
+                    row[f"{method} Score"] = round(score, 4)
+                    row[f"{method} Text"] = text[:32000]
+                    row[f"{method} Source"] = source
                 else:
-                    row[f"{method_name} Score"] = None
-                    row[f"{method_name} Text"] = ""
-                    row[f"{method_name} Source"] = ""
-            
+                    row[f"{method} Score"] = None
+                    row[f"{method} Text"] = ""
+                    row[f"{method} Source"] = ""
             rows.append(row)
 
-    df = pd.DataFrame(rows)
-    
-    cols = ["Query", "Rank"]
-    for m in methods:
-        cols.extend([f"{m} Score", f"{m} Text", f"{m} Source"])
-    
-    cols = [c for c in cols if c in df.columns]
-    df = df[cols]
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    out_path = os.path.join(OUTPUT_DIR, filename)
-    
-    print(f"Saving Excel to {out_path}...")
-    try:
-        df.to_excel(out_path, index=False, engine='openpyxl')
-        print("Done.")
-    except Exception as e:
-        print(f"Error saving Excel: {e}")
-
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    pd.DataFrame(rows).to_excel(output_path, index=False)
+    print(f"Report saved to {output_path}")
 
 def main():
-    all_docs = load_data()
+    all_docs = load_documents(PATHS["docs"])
     if not all_docs:
         print("CRITICAL: No documents loaded. Exiting.")
         sys.exit(1)
     print(f"Total documents: {len(all_docs)}")
 
-    print("Loading models...")
+    print("\n--- Loading Models ---")
     try:
-        bge = BGEHybridEmbedder(PATH_BGE, device="cpu")
+        bge_embedder = BGEHybridEmbedder(PATHS["bge"], device="cpu") 
+        ft_embedder = FastTextEmbedder(PATHS["fasttext"])
     except Exception as e:
-        print(f"Error loading BGE: {e}")
-        sys.exit(1)
-
-    try:
-        ft = FastTextEmbedder(PATH_FASTTEXT)
-    except Exception as e:
-        print(f"Error loading FastText: {e}")
+        print(f"Error loading models: {e}")
         sys.exit(1)
 
     print("\n--- Starting Indexing ---")
     
-    ft_retriever = DenseRetriever(ft, name="FastText_Doc")
+    ft_retriever = DenseRetriever(ft_embedder, name="FastText_Doc")
     ft_retriever.index(tqdm(all_docs, desc="Indexing FastText"), granularity="doc")
 
-    bge_retriever_doc = DenseRetriever(bge, name="BGE_Doc")
-    bge_retriever_doc.index(tqdm(all_docs, desc="Indexing BGE (CPU)"), granularity="doc")
+    bge_retriever = DenseRetriever(bge_embedder, name="BGE_Doc")
+    bge_retriever.index(tqdm(all_docs, desc="Indexing BGE"), granularity="doc")
 
     bm25_retriever = BM25Retriever(name="BM25")
     bm25_retriever.index(tqdm(all_docs, desc="Indexing BM25"))
 
-    p1 = EnsembleRetriever([bge_retriever_doc])
-    p1.set_documents(all_docs)
-
-    p2 = EnsembleRetriever([ft_retriever, bm25_retriever])
-    p2.set_documents(all_docs)
-
-    p3 = EnsembleRetriever([bge_retriever_doc, ft_retriever, bm25_retriever])
-    p3.set_documents(all_docs)
-
-    queries = load_queries()
+    print("\n--- Setting up Ensembles ---")
+    pipelines = {
+        "BGE_Only": EnsembleRetriever([bge_retriever]),
+        "FastText_BM25": EnsembleRetriever([ft_retriever, bm25_retriever]),
+        "All_Combined": EnsembleRetriever([bge_retriever, ft_retriever, bm25_retriever])
+    }
     
+    for p in pipelines.values():
+        p.set_documents(all_docs)
+
+    queries = load_queries(PATHS["queries"])[:QUERIES_LIMIT]
     if not queries:
-        print("Список вопросов пуст. Выход.")
+        print("No queries found.")
         sys.exit(0)
 
-    queries_to_run = queries[:20] 
-    
+    print(f"\nRunning comparison on {len(queries)} queries...")
     comparison_data = {}
-    limit_results = 5
-    
-    print(f"\nRunning comparison on {len(queries_to_run)} queries...")
-    
-    for q in tqdm(queries_to_run, desc="Processing Queries"):
-        q = str(q).strip()
-        if not q: continue
-        
-        res_p1 = p1.search(q, limit=limit_results)
-        res_p2 = p2.search(q, limit=limit_results)
-        res_p3 = p3.search(q, limit=limit_results)
-        
-        comparison_data[q] = {
-            "BGE_Only": res_p1,
-            "FastText_BM25": res_p2,
-            "All_Combined": res_p3
-        }
 
-    save_report_xlsx(comparison_data, "comparison_matrix.xlsx")
+    for q in tqdm(queries, desc="Processing Queries"):
+        comparison_data[q] = {}
+        for name, pipe in pipelines.items():
+            comparison_data[q][name] = pipe.search(q, limit=TOP_K_RESULTS)
+
+    output_file = os.path.join(PATHS["output_dir"], REPORT_FILENAME)
+    save_report(comparison_data, output_file)
 
 if __name__ == "__main__":
     main()
