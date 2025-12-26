@@ -5,15 +5,16 @@ from tqdm import tqdm
 from typing import List, Dict
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
 from database import JSONLDataset, XLSXDataset
-from embedders import BGEHybridEmbedder, FastTextEmbedder
 from retrieval import DenseRetriever, BM25Retriever, EnsembleRetriever
+from embedders import BGEHybridEmbedder, FastTextEmbedder, RusVectoresEmbedder
 
 PATHS = {
-    "fasttext": "/home/mikhailovnk/run_git/vector_search_sandbox/cc.ru.300.bin",
+    "rusvectores": "/home/mikhailovnk/00_Models/Embedders/rusvectores/model.model",
+    "fasttext": "/home/mikhailovnk/00_Models/Embedders/cc.ru.300.bin",
     "bge": "/home/mikhailovnk/00_Models/Embedders/BGE-M3",
     "docs": [
-        "/home/mikhailovnk/run_git/vector_search_sandbox/indorcad.jsonl",
-        "/home/mikhailovnk/run_git/vector_search_sandbox/faq.jsonl"
+        "indorcad.jsonl",
+        "faq.jsonl"
     ],
     "queries": "/home/mikhailovnk/run_git/vector_search_sandbox/Ответы_IndorAssistant_v2.xlsx",
     "output_dir": "./comparison_results"
@@ -102,11 +103,15 @@ def main():
     try:
         bge_embedder = BGEHybridEmbedder(PATHS["bge"], device="cpu") 
         ft_embedder = FastTextEmbedder(PATHS["fasttext"])
+        rv_embedder = RusVectoresEmbedder(PATHS["rusvectores"]) 
     except Exception as e:
         print(f"Error loading models: {e}")
         sys.exit(1)
 
     print("\n--- Starting Indexing ---")
+    
+    rv_retriever = DenseRetriever(rv_embedder, name="RusVectores_Doc")
+    rv_retriever.index(tqdm(all_docs, desc="Indexing RusVectores"), granularity="doc")
     
     ft_retriever = DenseRetriever(ft_embedder, name="FastText_Doc")
     ft_retriever.index(tqdm(all_docs, desc="Indexing FastText"), granularity="doc")
@@ -120,8 +125,9 @@ def main():
     print("\n--- Setting up Ensembles ---")
     pipelines = {
         "BGE_Only": EnsembleRetriever([bge_retriever]),
-        "FastText_BM25": EnsembleRetriever([ft_retriever, bm25_retriever]),
-        "All_Combined": EnsembleRetriever([bge_retriever, ft_retriever, bm25_retriever])
+        "FastText_FB_Only": EnsembleRetriever([ft_retriever]),
+        "RusVectores_Only": EnsembleRetriever([rv_retriever]),
+        "All_Ensemble": EnsembleRetriever([bge_retriever, rv_retriever, bm25_retriever])
     }
     
     for p in pipelines.values():
