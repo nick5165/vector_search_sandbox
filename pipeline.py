@@ -9,11 +9,11 @@ from embedders import BGEHybridEmbedder, FastTextEmbedder
 from retrieval import DenseRetriever, BM25Retriever, EnsembleRetriever
 
 PATHS = {
-    "fasttext": "/home/mikhailovnk/run_git/vector_search_sandbox/cc.ru.300.bin",
+    "fasttext": "/home/mikhailovnk/00_Models/Embedders/cc.ru.300.bin",
     "bge": "/home/mikhailovnk/00_Models/Embedders/BGE-M3",
     "docs": [
-        "/home/mikhailovnk/run_git/vector_search_sandbox/indorcad.jsonl",
-        "/home/mikhailovnk/run_git/vector_search_sandbox/faq.jsonl"
+        "indorcad.jsonl",
+        "faq.jsonl"
     ],
     "queries": "/home/mikhailovnk/run_git/vector_search_sandbox/Ответы_IndorAssistant_v2.xlsx",
     "output_dir": "./comparison_results"
