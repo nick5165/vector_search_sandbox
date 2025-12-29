@@ -8,7 +8,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 from database import JSONLDataset, XLSXDataset
 from retrieval import DenseRetriever, BM25Retriever, EnsembleRetriever
-from embedders import BGEHybridEmbedder, FastTextEmbedder, RusVectoresEmbedder
+from embedders import BGEHybridEmbedder, FastTextEmbedder
 
 PATHS = {
     "rusvectores": "/home/mikhailovnk/00_Models/Embedders/rusvectores/model.model",
@@ -94,15 +94,11 @@ def main():
     try:
         bge_embedder = BGEHybridEmbedder(PATHS["bge"], device="cpu") 
         ft_embedder = FastTextEmbedder(PATHS["fasttext"])
-        rv_embedder = RusVectoresEmbedder(PATHS["rusvectores"]) 
     except Exception as e:
         print(f"Error loading models: {e}")
         sys.exit(1)
 
     print("\n--- Starting Indexing ---")
-    
-    rv_retriever = DenseRetriever(rv_embedder, name="RusVectores_Doc")
-    rv_retriever.index(tqdm(all_docs, desc="Indexing RusVectores"), granularity="doc")
     
     ft_retriever = DenseRetriever(ft_embedder, name="FastText_Doc")
     ft_retriever.index(tqdm(all_docs, desc="Indexing FastText"), granularity="doc")
@@ -117,8 +113,7 @@ def main():
     pipelines = {
         "BGE_Only": EnsembleRetriever([bge_retriever]),
         "FastText_FB_Only": EnsembleRetriever([ft_retriever]),
-        "RusVectores_Only": EnsembleRetriever([rv_retriever]),
-        "All_Ensemble": EnsembleRetriever([bge_retriever, rv_retriever, bm25_retriever])
+        "All_Ensemble": EnsembleRetriever([bge_retriever, bm25_retriever])
     }
     
     for p in pipelines.values():
