@@ -2,8 +2,10 @@ import os
 import sys
 import pandas as pd
 from tqdm import tqdm
-from typing import List, Dict
+from typing import Dict
+
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 from database import JSONLDataset, XLSXDataset
 from retrieval import DenseRetriever, BM25Retriever, EnsembleRetriever
 from embedders import BGEHybridEmbedder, FastTextEmbedder, RusVectoresEmbedder
@@ -23,45 +25,19 @@ REPORT_FILENAME = "comparison_matrix.xlsx"
 TOP_K_RESULTS = 5
 QUERIES_LIMIT = 20  
 
-def load_documents(file_paths: List[str]) -> List[Dict]:
-    docs = []
-    for path in file_paths:
-        if not os.path.exists(path):
-            print(f"Warning: Path not found {path}")
-            continue
-            
-        print(f"Loading from {os.path.basename(path)}...")
-        ds = JSONLDataset(path)
-        for i in tqdm(range(len(ds)), desc="Reading records"):
-            rec = ds[i]
-            rec['source_file'] = os.path.basename(path)
-            docs.append(rec)
-    return docs
-
-def load_queries(path: str) -> List[str]:
-    if not os.path.exists(path):
-        print(f"CRITICAL: Queries file not found: {path}")
-        sys.exit(1)
-
-    print(f"Loading queries from {path}...")
-    ds = XLSXDataset(path)
-    
-    target_col = next((col for col in ds.columns if 'Вопрос' in str(col)), None)
-    
-    if not target_col:
-        print("CRITICAL: Column 'Вопрос' not found in Excel.")
-        sys.exit(1)
-        
-    return [str(q).strip() for q in ds[target_col] if str(q).strip()]
-
 def save_report(results_map: Dict, output_path: str):
     if not results_map:
         print("No results to save.")
         return
 
     rows = []
-    first_q = next(iter(results_map))
-    methods = list(results_map[first_q].keys())
+
+    try:
+        first_q = next(iter(results_map))
+        methods = list(results_map[first_q].keys())
+    except StopIteration:
+        print("Results map is empty.")
+        return
 
     for query, methods_data in tqdm(results_map.items(), desc="Generating Report"):
         max_hits = max((len(hits) for hits in methods_data.values()), default=0)
@@ -93,11 +69,26 @@ def save_report(results_map: Dict, output_path: str):
     print(f"Report saved to {output_path}")
 
 def main():
-    all_docs = load_documents(PATHS["docs"])
+    print("\n--- Loading Documents ---")
+    all_docs = []
+    
+    for path in PATHS["docs"]:
+        if not os.path.exists(path):
+            print(f"Warning: Path not found {path}")
+            continue
+            
+        print(f"Reading {os.path.basename(path)}...")
+        ds = JSONLDataset(path)
+        
+        for i in tqdm(range(len(ds)), desc=f"Parsing {os.path.basename(path)}"):
+            rec = ds[i]
+            rec['source_file'] = os.path.basename(path)
+            all_docs.append(rec)
+
     if not all_docs:
         print("CRITICAL: No documents loaded. Exiting.")
         sys.exit(1)
-    print(f"Total documents: {len(all_docs)}")
+    print(f"Total documents loaded: {len(all_docs)}")
 
     print("\n--- Loading Models ---")
     try:
@@ -133,18 +124,34 @@ def main():
     for p in pipelines.values():
         p.set_documents(all_docs)
 
-    queries = load_queries(PATHS["queries"])[:QUERIES_LIMIT]
-    if not queries:
-        print("No queries found.")
-        sys.exit(0)
+    print("\n--- Loading Queries ---")
+    if not os.path.exists(PATHS["queries"]):
+        print(f"CRITICAL: Queries file not found: {PATHS['queries']}")
+        sys.exit(1)
 
-    print(f"\nRunning comparison on {len(queries)} queries...")
+    queries_ds = XLSXDataset(PATHS["queries"])
+    
+    target_col = next((col for col in queries_ds.columns if 'Вопрос' in str(col)), None)
+    
+    if not target_col:
+        print("CRITICAL: Column 'Вопрос' not found in Excel.")
+        sys.exit(1)
+    
+    total_queries = min(len(queries_ds), QUERIES_LIMIT)
+    print(f"\nRunning comparison on {total_queries} queries...")
+    
     comparison_data = {}
 
-    for q in tqdm(queries, desc="Processing Queries"):
-        comparison_data[q] = {}
+    for i in tqdm(range(total_queries), desc="Processing Queries"):
+        row = queries_ds[i]
+        query_text = str(row.get(target_col, "")).strip()
+
+        if not query_text:
+            continue
+
+        comparison_data[query_text] = {}
         for name, pipe in pipelines.items():
-            comparison_data[q][name] = pipe.search(q, limit=TOP_K_RESULTS)
+            comparison_data[query_text][name] = pipe.search(query_text, limit=TOP_K_RESULTS)
 
     output_file = os.path.join(PATHS["output_dir"], REPORT_FILENAME)
     save_report(comparison_data, output_file)
