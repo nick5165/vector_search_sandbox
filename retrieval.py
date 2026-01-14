@@ -1,11 +1,10 @@
-import zlib
 import numpy as np
 from rank_bm25 import BM25Okapi
 from collections import defaultdict, Counter
 from typing import Tuple, List, Dict, Any, Optional
 
-from embedders import BaseEmbedder
 from text_utils import tokenize_text, split_into_sentences
+from embedders import BaseEmbedder
 
 class BaseRetriever:
     """
@@ -21,61 +20,44 @@ class BaseRetriever:
     def index(self, documents: List[Dict], granularity: str = "doc"):
         """
         Создает индекс на основе переданных документов.
-        
-        Args:
-            documents: Список словарей с данными документов.
-            granularity: Уровень детализации ('doc' - документ целиком, 'sentence' - по предложениям).
         """
-        
         pass
     
     def search(self, query: str, top_k: int) -> List[Tuple[int, float]]:
         """
         Выполняет поиск по индексу.
-        
-        Args:
-            query: Текст запроса.
-            top_k: Количество возвращаемых результатов.
-            
-        Returns:
-            Список кортежей (doc_id, score), отсортированный по убыванию релевантности.
         """
-        
         pass
     
 class DenseRetriever(BaseRetriever):
     """
-    Реализует семантический поиск на основе плотных векторов (Dense Vectors).
-    Использует переданный embedder (FastText, BGE, BERT и т.д.).
+    Реализует семантический поиск.
     """
     
     def __init__(self, embedder: BaseEmbedder, name: str = "dense"):
         super().__init__(name)
         self.embedder = embedder
         self.vectors = []
+        self.sparse_vectors = []
         self.index_to_doc_id = []
+        self.matrix = None
+        self.has_sparse_data = False
         
     def _normalize(self, vec):
         """
-        Нормализация вектора.
-        Необходима для того, чтобы Dot Product был эквивалентен Cosine Similarity.
+        Нормализация вектора для Cosine Similarity.
         """
-        
         norm = np.linalg.norm(vec)
         return vec / norm if norm > 0 else vec
     
     def index(self, documents: List[Dict], granularity: str = "doc"):
         """
-        Векторизует документы и собирает их в матрицу.
-        
-        Логика granularity:
-        - 'doc': Векторизуется весь текст поля chunk_text/question.
-        - 'sentence': Текст разбивается на предложения, каждое векторизуется отдельно. 
-          В индекс попадает много векторов, ссылающихся на один real_doc_id.
+        Векторизует документы. Сохраняет и Dense, и Sparse представления.
         """
         
         print(f"[{self.name}] Indexing {len(documents)} docs (mode={granularity})...")
         self.vectors = []
+        self.sparse_vectors = []
         self.index_to_doc_id = []
         
         for doc_idx, doc in enumerate(documents):
@@ -85,41 +67,66 @@ class DenseRetriever(BaseRetriever):
             
             if granularity == "sentence":
                 sents = split_into_sentences(text)
-                
                 if not sents:
                     sents = [text]
-                    
                 texts_to_embed = sents
-                    
             else:
                 texts_to_embed = [text]
                 
             for t in texts_to_embed:
                 vec = self.embedder.embed_dense(t)
                 self.vectors.append(self._normalize(vec))
+
+                sp_vec = self.embedder.embed_sparse(t)
+                self.sparse_vectors.append(sp_vec)
+                
                 self.index_to_doc_id.append(doc_idx)
             
         if self.vectors:    
             self.matrix = np.vstack(self.vectors)
+
+            self.has_sparse_data = any(len(d) > 0 for d in self.sparse_vectors)
+            if self.has_sparse_data:
+                print(f"[{self.name}] Sparse vectors detected. Hybrid search enabled.")
         else:
             self.matrix = np.array([])
             
     def search(self, query: str, top_k: int) -> List[Tuple[int, float]]:
         """
-        Поиск ближайших соседей через скалярное произведение (Dot Product).
-        Реализует стратегию 'Max Score Aggregation': если документ разбит на предложения,
-        берется скор самого релевантного предложения.
+        Поиск ближайших соседей.
+        Score = DotProduct(Dense) + DotProduct(Sparse).
         """
-        
+
         q_vec = self._normalize(self.embedder.embed_dense(query))
-        scores = np.dot(self.matrix, q_vec)
+        dense_scores = np.dot(self.matrix, q_vec)
         
-        top_indices = np.argsort(scores)[-top_k*3:][::-1]
+        final_scores = dense_scores
+
+        if self.has_sparse_data:
+            q_sparse = self.embedder.embed_sparse(query)
+
+            if q_sparse:
+                combined_scores = np.copy(dense_scores)
+
+                for i, doc_sparse in enumerate(self.sparse_vectors):
+                    if not doc_sparse:
+                        continue
+                        
+                    sparse_score = 0.0
+                    for token_id, q_weight in q_sparse.items():
+                        if token_id in doc_sparse:
+                            sparse_score += q_weight * doc_sparse[token_id]
+                    
+                    combined_scores[i] += sparse_score
+                
+                final_scores = combined_scores
+
+        top_indices = np.argsort(final_scores)[-top_k*5:][::-1]
         
         doc_scores = {}
         for idx in top_indices:
             real_doc_id = self.index_to_doc_id[idx]
-            score = float(scores[idx])
+            score = float(final_scores[idx])
             
             if real_doc_id not in doc_scores or score > doc_scores[real_doc_id]:
                 doc_scores[real_doc_id] = score
@@ -139,9 +146,6 @@ class BM25Retriever(BaseRetriever):
     def index(self, documents: List[Dict], granularity: str = "doc"):
         """
         Токенизирует документы и строит обратный индекс BM25.
-        
-        При granularity='sentence' каждое предложение считается отдельным "документом" 
-        для статистики BM25, но при поиске результаты схлопываются обратно в исходный документ.
         """
         
         print(f"[{self.name}] Indexing {len(documents)} docs (mode={granularity})...")
@@ -171,8 +175,6 @@ class BM25Retriever(BaseRetriever):
     def search(self, query: str, top_k: int) -> List[Tuple[int, float]]:
         """
         Выполняет поиск по ключевым словам.
-        Агрегирует результаты: если найдено несколько сегментов одного документа, 
-        берется лучший (по аналогии с DenseRetriever).
         """
         
         tokenized_query = tokenize_text(query)
@@ -201,8 +203,7 @@ class BM25Retriever(BaseRetriever):
 class EnsembleRetriever:
     """
     Класс-оркестратор для гибридного поиска.
-    Объединяет результаты нескольких ретриверов (Dense, BM25) 
-    используя алгоритм Reciprocal Rank Fusion (RRF).
+    Объединяет результаты нескольких ретриверов через RRF.
     """
     
     def __init__(self, retrievers: List[BaseRetriever]):
@@ -211,22 +212,13 @@ class EnsembleRetriever:
         
     def set_documents(self, docs: List[Dict]):
         """
-        Сохраняет ссылку на исходные документы, чтобы возвращать их контент в search().
+        Сохраняет ссылку на исходные документы.
         """
-        
         self.documents_store = {i: d for i, d in enumerate(docs)}
         
     def rrf_fuse(self, results_list: List[List[Tuple[int, float]]], k: int = 60):
         """
         Реализация Reciprocal Rank Fusion.
-        Score = sum(1 / (k + rank_i + 1)) для каждого ретривера.
-        
-        Args:
-            results_list: Список списков результатов от разных ретриверов.
-            k: Константа сглаживания (обычно 60).
-            
-        Returns:
-            Список словарей с финальным скором и контентом документов.
         """
         
         rrf_map = defaultdict(float)
@@ -247,12 +239,9 @@ class EnsembleRetriever:
                 })
         return final_output
 
-    def search(self, query: str, limit: int = 10) -> List[Dict]:
+    def search(self, query: str, limit: int = 30) -> List[Dict]:
         """
         Главный метод поиска.
-        1. Запрашивает результаты у всех дочерних ретриверов.
-        2. Объединяет их через RRF.
-        3. Возвращает топ-limit документов с контентом.
         """
         all_results = []
         for r in self.retrievers:

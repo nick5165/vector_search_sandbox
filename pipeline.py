@@ -1,5 +1,6 @@
 import os
 import sys
+import pickle
 import pandas as pd
 from tqdm import tqdm
 from typing import Dict
@@ -19,12 +20,59 @@ PATHS = {
         "faq.jsonl"
     ],
     "queries": "/home/mikhailovnk/run_git/vector_search_sandbox/Ответы_IndorAssistant_v2.xlsx",
-    "output_dir": "./comparison_results"
+    "output_dir": "./comparison_results",
+    "cache_dir": "./cache_indexes"
 }
-REPORT_FILENAME = "comparison_matrix.xlsx"
-TOP_K_RESULTS = 5
-QUERIES_LIMIT = 20  
+TOP_K_RESULTS = 10
 
+def get_retriever(name: str, retriever_cls, documents, embedder = None, granularity: str = "doc"):
+    os.makedirs(PATHS["cache_dir"], exist_ok=True)
+    cache_path = os.path.join(PATHS["cache_dir"], f"{name}.pkl")
+    
+    if os.path.exists(cache_path):
+        print(f"[{name}] Found cached index at {cache_path}. Loading...")
+        
+        try:
+            with open(cache_path, 'rb') as f:
+                retriever = pickle.load(f)
+                if embedder is not None:
+                    retriever.embedder = embedder
+                    
+                print(f"[{name}] Successfully loaded from cache")
+                return retriever
+        except Exception as e:
+            print(f"[{name}] Failed to load cache ({e}). Proceeding to re-indexing")
+            
+    print(f"[{name}] Indexing documents...")
+    if embedder is not None:
+        retriever = retriever_cls(embedder, name=name)
+    else:
+        retriever = retriever_cls(name=name)
+        
+    retriever.index(tqdm(documents, desc=f"Indexing {name}"), granularity=granularity)   
+    print(f"[{name}] Saving index to {cache_path}...")
+    
+    try:
+        temp_embedder = None
+        
+        if hasattr(retriever, 'embedder'):
+            temp_embedder = retriever.embedder
+            retriever.embedder = None
+            
+        with open(cache_path, 'wb') as f:
+            pickle.dump(retriever, f)
+            
+        if temp_embedder is not None:
+            retriever.embedder = temp_embedder
+        
+        print(f"[{name}] Saved")
+            
+    except Exception as e:
+        print(f"[{name}] Could not save cache: {e}")
+        
+    return retriever
+
+    
 def save_report(results_map: Dict, output_path: str):
     if not results_map:
         print("No results to save.")
@@ -101,60 +149,58 @@ def main():
 
     print("\n--- Starting Indexing ---")
     
-    rv_retriever = DenseRetriever(rv_embedder, name="RusVectores_Doc")
-    rv_retriever.index(tqdm(all_docs, desc="Indexing RusVectores"), granularity="doc")
+    rv_retriever = get_retriever(
+        name="RusVectores_Doc",
+        retriever_cls=DenseRetriever,
+        documents=all_docs,
+        embedder=rv_embedder
+    )
     
-    ft_retriever = DenseRetriever(ft_embedder, name="FastText_Doc")
-    ft_retriever.index(tqdm(all_docs, desc="Indexing FastText"), granularity="doc")
+    ft_retriever = get_retriever(
+        name="Fasttex_Doc",
+        retriever_cls=DenseRetriever,
+        documents=all_docs,
+        embedder=ft_embedder
+    )
 
-    bge_retriever = DenseRetriever(bge_embedder, name="BGE_Doc")
-    bge_retriever.index(tqdm(all_docs, desc="Indexing BGE"), granularity="doc")
+    bge_retriever = get_retriever(
+        name="BGE_Doc",
+        retriever_cls=DenseRetriever,
+        documents=all_docs,
+        embedder=bge_embedder
+    )
 
-    bm25_retriever = BM25Retriever(name="BM25")
-    bm25_retriever.index(tqdm(all_docs, desc="Indexing BM25"))
+    bm25_retriever = get_retriever(
+        name="BM25_Doc", 
+        retriever_cls=BM25Retriever,
+        documents=all_docs,
+    )
 
     print("\n--- Setting up Ensembles ---")
     pipelines = {
         "BGE_Only": EnsembleRetriever([bge_retriever]),
         "FastText_FB_Only": EnsembleRetriever([ft_retriever]),
         "RusVectores_Only": EnsembleRetriever([rv_retriever]),
-        "All_Ensemble": EnsembleRetriever([bge_retriever, rv_retriever, bm25_retriever])
+        "BM25_Only": EnsembleRetriever([bm25_retriever])
     }
     
     for p in pipelines.values():
         p.set_documents(all_docs)
+        
+    i=0
+    while True:
+        i+=1
+        query = str(input("Enter your query\n")).strip()
+        
+        comparison_data = {}
 
-    print("\n--- Loading Queries ---")
-    if not os.path.exists(PATHS["queries"]):
-        print(f"CRITICAL: Queries file not found: {PATHS['queries']}")
-        sys.exit(1)
-
-    queries_ds = XLSXDataset(PATHS["queries"])
-    
-    target_col = next((col for col in queries_ds.columns if 'Вопрос' in str(col)), None)
-    
-    if not target_col:
-        print("CRITICAL: Column 'Вопрос' not found in Excel.")
-        sys.exit(1)
-    
-    total_queries = min(len(queries_ds), QUERIES_LIMIT)
-    print(f"\nRunning comparison on {total_queries} queries...")
-    
-    comparison_data = {}
-
-    for i in tqdm(range(total_queries), desc="Processing Queries"):
-        row = queries_ds[i]
-        query_text = str(row.get(target_col, "")).strip()
-
-        if not query_text:
-            continue
-
-        comparison_data[query_text] = {}
+        comparison_data[query] = {}
         for name, pipe in pipelines.items():
-            comparison_data[query_text][name] = pipe.search(query_text, limit=TOP_K_RESULTS)
-
-    output_file = os.path.join(PATHS["output_dir"], REPORT_FILENAME)
-    save_report(comparison_data, output_file)
+            comparison_data[query][name] = pipe.search(query, limit=TOP_K_RESULTS)
+            report_filename = f"{name}_{i}.xlsx"
+            output_file = os.path.join(PATHS["output_dir"], report_filename)
+            save_report(comparison_data, output_file)
+        print(f"Query index: {i}")
 
 if __name__ == "__main__":
     main()
