@@ -141,7 +141,7 @@ def main():
     print("\n--- Loading Models ---")
     try:
         bge_embedder = BGEHybridEmbedder(PATHS["bge"], device="cpu") 
-        ft_embedder = FastTextEmbedder(PATHS["fasttext"])
+        # ft_embedder = FastTextEmbedder(PATHS["fasttext"])
         rv_embedder = RusVectoresEmbedder(PATHS["rusvectores"]) 
     except Exception as e:
         print(f"Error loading models: {e}")
@@ -156,12 +156,12 @@ def main():
         embedder=rv_embedder
     )
     
-    ft_retriever = get_retriever(
-        name="Fasttex_Doc",
-        retriever_cls=DenseRetriever,
-        documents=all_docs,
-        embedder=ft_embedder
-    )
+    # ft_retriever = get_retriever(
+    #     name="Fasttex_Doc",
+    #     retriever_cls=DenseRetriever,
+    #     documents=all_docs,
+    #     embedder=ft_embedder
+    # )
 
     bge_retriever = get_retriever(
         name="BGE_Doc",
@@ -179,7 +179,7 @@ def main():
     print("\n--- Setting up Ensembles ---")
     pipelines = {
         "BGE_Only": EnsembleRetriever([bge_retriever]),
-        "FastText_FB_Only": EnsembleRetriever([ft_retriever]),
+        # "FastText_FB_Only": EnsembleRetriever([ft_retriever]),
         "RusVectores_Only": EnsembleRetriever([rv_retriever]),
         "BM25_Only": EnsembleRetriever([bm25_retriever])
     }
