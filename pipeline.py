@@ -99,7 +99,7 @@ def save_report(results_map: Dict, output_path: str):
                     hit = hits[rank]
                     content = hit['content']
                     
-                    text = content.get("chunk_text") or content.get("answer") or content.get("question") or ""
+                    text = content.get("chunk_text") or (content.get("answer") + content.get("question")) or ""
                     source = content.get("source_file", "")
                     score = hit.get('rrf_score', 0)
 

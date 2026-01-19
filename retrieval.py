@@ -1,7 +1,7 @@
 import numpy as np
 from rank_bm25 import BM25Okapi
-from collections import defaultdict, Counter
-from typing import Tuple, List, Dict, Any, Optional
+from collections import defaultdict
+from typing import Tuple, List, Dict
 
 from text_utils import tokenize_text, split_into_sentences
 from embedders import BaseEmbedder
@@ -31,44 +31,44 @@ class BaseRetriever:
     
 class DenseRetriever(BaseRetriever):
     """
-    Реализует семантический поиск.
+    Реализует семантический поиск с гибридным ранжированием (RRF) 
+    и оптимизацией через Inverted Index.
     """
     
     def __init__(self, embedder: BaseEmbedder, name: str = "dense"):
         super().__init__(name)
         self.embedder = embedder
         self.vectors = []
-        self.sparse_vectors = []
+        self.sparse_vectors = [] 
+
+        self.inverted_index = defaultdict(list)
+        
         self.index_to_doc_id = []
         self.matrix = None
         self.has_sparse_data = False
         
     def _normalize(self, vec):
-        """
-        Нормализация вектора для Cosine Similarity.
-        """
         norm = np.linalg.norm(vec)
         return vec / norm if norm > 0 else vec
     
     def index(self, documents: List[Dict], granularity: str = "doc"):
         """
-        Векторизует документы. Сохраняет и Dense, и Sparse представления.
+        Векторизует документы и строит обратный индекс (Inverted Index).
         """
-        
         print(f"[{self.name}] Indexing {len(documents)} docs (mode={granularity})...")
+
         self.vectors = []
         self.sparse_vectors = []
         self.index_to_doc_id = []
+        self.inverted_index = defaultdict(list)
         
         for doc_idx, doc in enumerate(documents):
             text = doc.get("chunk_text") or doc.get("question") or ""
             
             texts_to_embed = []
-            
             if granularity == "sentence":
                 sents = split_into_sentences(text)
-                if not sents:
-                    sents = [text]
+                if not sents: sents = [text]
                 texts_to_embed = sents
             else:
                 texts_to_embed = [text]
@@ -79,61 +79,70 @@ class DenseRetriever(BaseRetriever):
 
                 sp_vec = self.embedder.embed_sparse(t)
                 self.sparse_vectors.append(sp_vec)
+
+                current_internal_id = len(self.vectors) - 1
+
+                if sp_vec:
+                    for token_id, weight in sp_vec.items():
+                        if weight > 0:
+                            self.inverted_index[token_id].append((current_internal_id, weight))
                 
                 self.index_to_doc_id.append(doc_idx)
             
         if self.vectors:    
             self.matrix = np.vstack(self.vectors)
-
-            self.has_sparse_data = any(len(d) > 0 for d in self.sparse_vectors)
+            self.has_sparse_data = bool(self.inverted_index)
             if self.has_sparse_data:
-                print(f"[{self.name}] Sparse vectors detected. Hybrid search enabled.")
+                print(f"[{self.name}] Sparse vectors detected. Inverted Index built.")
         else:
             self.matrix = np.array([])
-            
-    def search(self, query: str, top_k: int) -> List[Tuple[int, float]]:
+
+    def search(self, query: str, top_k: int, k_const: int = 60) -> List[Tuple[int, float]]:
         """
-        Поиск ближайших соседей.
-        Score = DotProduct(Dense) + DotProduct(Sparse).
+        Поиск с использованием RRF и ускоренный через Inverted Index.
         """
 
         q_vec = self._normalize(self.embedder.embed_dense(query))
         dense_scores = np.dot(self.matrix, q_vec)
         
-        final_scores = dense_scores
+        candidates_limit = top_k * 2
+        dense_top_indices = np.argsort(dense_scores)[-candidates_limit:][::-1]
 
+        sparse_top_indices = []
+        
         if self.has_sparse_data:
             q_sparse = self.embedder.embed_sparse(query)
-
-            if q_sparse:
-                combined_scores = np.copy(dense_scores)
-
-                for i, doc_sparse in enumerate(self.sparse_vectors):
-                    if not doc_sparse:
-                        continue
-                        
-                    sparse_score = 0.0
-                    for token_id, q_weight in q_sparse.items():
-                        if token_id in doc_sparse:
-                            sparse_score += q_weight * doc_sparse[token_id]
-                    
-                    combined_scores[i] += sparse_score
-                
-                final_scores = combined_scores
-
-        top_indices = np.argsort(final_scores)[-top_k*5:][::-1]
-        
-        doc_scores = {}
-        for idx in top_indices:
-            real_doc_id = self.index_to_doc_id[idx]
-            score = float(final_scores[idx])
             
-            if real_doc_id not in doc_scores or score > doc_scores[real_doc_id]:
-                doc_scores[real_doc_id] = score
+            if q_sparse:
+                sparse_scores = np.zeros(self.matrix.shape[0])
                 
-        sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+                for token_id, q_weight in q_sparse.items():
+                    if token_id in self.inverted_index:
+                        postings = self.inverted_index[token_id]
+
+                        for doc_idx, doc_weight in postings:
+                            sparse_scores[doc_idx] += q_weight * doc_weight
+                
+                sparse_top_indices = np.argsort(sparse_scores)[-candidates_limit:][::-1]
+
+        rrf_map = {} 
+
+        def add_ranks(indices):
+            for rank, idx in enumerate(indices):
+                real_doc_id = self.index_to_doc_id[idx]
+                score = 1.0 / (k_const + rank + 1)
+                rrf_map[real_doc_id] = rrf_map.get(real_doc_id, 0.0) + score
+
+        add_ranks(dense_top_indices)
+        
+        if self.has_sparse_data and len(sparse_top_indices) > 0:
+            add_ranks(sparse_top_indices)
+
+        sorted_docs = sorted(rrf_map.items(), key=lambda x: x[1], reverse=True)[:top_k]
         return sorted_docs
-    
+                
+            
+        
 class BM25Retriever(BaseRetriever):
     """
     Реализует лексический поиск (по ключевым словам) с использованием алгоритма BM25.
